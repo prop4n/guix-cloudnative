@@ -1,0 +1,4 @@
+(authorizations
+ (version 0)
+ (("52257F240684C4EE75F27073D5668F6D40B1D668"
+   (name "guix-cloudnative"))))

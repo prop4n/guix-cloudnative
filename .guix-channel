@@ -1,0 +1,4 @@
+(channel
+ (version 0)
+ (url "https://github.com/prop4n/guix-cloudnative")
+ (keyring-reference "keyring"))
