@@ -1,4 +1,9 @@
 (channel
  (version 0)
  (url "https://github.com/prop4n/guix-cloudnative")
- (keyring-reference "keyring"))
+ (keyring-reference "keyring")
+ (dependencies
+  (channel
+   (name nonguix)
+   (url "https://gitlab.com/nonguix/nonguix")
+   (branch "master"))))
