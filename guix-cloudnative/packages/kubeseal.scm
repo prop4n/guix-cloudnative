@@ -8,7 +8,7 @@
 (define-public kubeseal
   (package
     (name "kubeseal")
-    (version "0.36.0")
+    (version "0.36.1")
     (source
      (origin
        (method url-fetch)
@@ -16,7 +16,7 @@
              "https://github.com/bitnami-labs/sealed-secrets/releases/download/v"
              version "/kubeseal-" version "-linux-amd64.tar.gz"))
        (sha256
-        (base32 "1xzmddi3skccgkfxzm9vhafqv9accbxy2vylnhw7b31vmryz7rn0"))))
+        (base32 "1ij0vj00a087gb873bynk7cyy4bnf66dawqh4q9rxmz85c2a0iqw"))))
     (build-system binary-build-system)
     (arguments
      (list
