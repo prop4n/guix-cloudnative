@@ -16,7 +16,7 @@
              "https://github.com/cli/cli/releases/download/v"
              version "/gh_" version "_linux_amd64.tar.gz"))
        (sha256
-        (base32 "15b7gbk6b6cyb32x3383vzs0iy34d4wz3bqh2wnp7xjd283r2chb"))))
+        (base32 "1n4h6jxgmmnp1bqpysrx43hsifmfgnj8sm8wdkkk01ajvsm2qhnh"))))
     (build-system binary-build-system)
     (arguments
      (list
