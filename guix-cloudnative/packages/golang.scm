@@ -630,3 +630,27 @@ and baseboard/BIOS/chassis/product information.")
      "@@code{pcidb} is a small Go library for programmatic querying of PCI vendor,
 product and class information.")
     (license (list license:asl2.0 license:asl2.0))))
+
+(define-public go-github-com-leaanthony-clir
+  (package
+    (name "go-github-com-leaanthony-clir")
+    (version "1.7.0")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/leaanthony/clir")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "1lf780dl0a4p35innhbpb0qkj3hhhyh6s7mpmcih0kkfixgwf08m"))))
+    (build-system go-build-system)
+    (arguments
+     (list
+      #:import-path "github.com/leaanthony/clir"
+      #:tests? #f))
+    (home-page "https://github.com/leaanthony/clir")
+    (synopsis "Features")
+    (description
+     "Package clir provides a simple API for creating command line apps.")
+    (license license:expat)))
