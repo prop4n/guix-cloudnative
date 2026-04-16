@@ -424,7 +424,8 @@ https://app.fossa.io/api/projects/git%2Bgithub.com%2Fleaanthony%2Fgosod.svg?type
     (arguments
      (list
       #:import-path "github.com/wailsapp/wails/v2"
-      #:unpack-path "github.com/wailsapp/wails"))
+      #:unpack-path "github.com/wailsapp/wails"
+      #:tests? #f))
     (propagated-inputs (list go-github-com-acarl005-stripansi
                              go-github-com-bep-debounce
                              go-github-com-bitfield-script
@@ -653,4 +654,134 @@ product and class information.")
     (synopsis "Features")
     (description
      "Package clir provides a simple API for creating command line apps.")
+    (license license:expat)))
+
+(define-public go-github-com-leaanthony-winicon 
+  (package
+    (name "go-github-com-leaanthony-winicon")
+    (version "1.0.0")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/leaanthony/winicon")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "0r7f5ki1fi5gj8183k7p6dlgr5dalfx4qzbvbcn1643rnd7l3a8l"))))
+    (build-system go-build-system)
+    (arguments
+     (list
+      #:import-path "github.com/leaanthony/winicon"))
+    (propagated-inputs (list go-github-com-leaanthony-clir
+                             go-golang-org-x-image))
+    (home-page "https://github.com/leaanthony/winicon")
+    (synopsis "Installation")
+    (description
+     "Windows .ico file generation library + cli.  Works on all platforms supported by Go.")
+    (license license:expat)))
+
+(define-public go-github-com-tc-hib-winres
+  (package
+    (name "go-github-com-tc-hib-winres")
+    (version "0.3.1")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/tc-hib/winres")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "1sr4x8391jv96xv6b2ak2dlfl7p7fka5njz1p3y26bigw2420pxx"))))
+    (build-system go-build-system)
+    (arguments
+     (list
+      #:import-path "github.com/tc-hib/winres"
+      #:tests? #f))
+    (propagated-inputs (list go-github-com-nfnt-resize go-golang-org-x-image))
+    (home-page "https://github.com/tc-hib/winres")
+    (synopsis "winres")
+    (description
+     "Package winres provides functions to create a resource section for Windows
+executables.  This is where the application's icon, manifest, and version
+information are stored.")
+    (license license:bsd-0)))
+
+(define-public go-github-com-wailsapp-go-webview2
+  (package
+    (name "go-github-com-wailsapp-go-webview2")
+    (version "1.0.23")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/wailsapp/go-webview2")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "0qh3sj63vjgjkdziv5pbldngl3z8yfb71lym31s8qv6dv7wmidxm"))))
+    (build-system go-build-system)
+    (arguments
+     (list
+      #:import-path "github.com/wailsapp/go-webview2"
+      #:skip-build? #t
+      #:tests? #f))
+    (propagated-inputs (list go-github-com-jchv-go-winloader
+                             go-github-com-stretchr-testify
+                             go-golang-org-x-sys))
+    (home-page "https://github.com/wailsapp/go-webview2")
+    (synopsis "go-webview2")
+    (description
+     "This is a locally maintained fork of
+@@url{https://github.com/jchv/go-webview2,go-webview2} that is intended to be
+used with Wails applications.  It is not intended to be used as a standalone
+package.")
+    (license license:expat)))
+
+(define-public go-github-com-wzshiming-ctc
+  (package
+    (name "go-github-com-wzshiming-ctc")
+    (version "1.2.3")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/wzshiming/ctc")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "07am34jk9lbm2scmwymjsa74njh75p7n2j1j9bmmnrv8cdjq2qvv"))))
+    (build-system go-build-system)
+    (arguments
+     (list
+      #:import-path "github.com/wzshiming/ctc"))
+    (propagated-inputs (list go-github-com-wzshiming-winseq))
+    (home-page "https://github.com/wzshiming/ctc")
+    (synopsis "ctc - Console Text Colors")
+    (description
+     "The non-invasive cross-platform terminal color library does not need to modify
+the Print method.")
+    (license license:expat)))
+
+(define-public go-github-com-wzshiming-winseq
+  (package
+    (name "go-github-com-wzshiming-winseq")
+    (version "0.0.0-20200720163736-7fa652d2b50e")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/wzshiming/winseq")
+             (commit (go-version->git-ref version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "1dr98hzk0rappwnz18683qdal36srhxf4zi1d20xx0s099f43gsc"))))
+    (build-system go-build-system)
+    (arguments
+     (list
+      #:import-path "github.com/wzshiming/winseq"))
+    (home-page "https://github.com/wzshiming/winseq")
+    (synopsis "Windows Console Virtual Terminal Sequences")
+    (description "Use Unix like Sequences in Windows.")
     (license license:expat)))
