@@ -27,6 +27,10 @@
      (list
       #:import-path "github.com/glanceapp/glance"
       #:install-source? #f
+      #:build-flags
+      #~(list (string-append
+               "-ldflags=-X github.com/glanceapp/glance/internal/glance.buildVersion="
+               #$version))
       #:phases
       #~(modify-phases %standard-phases
           (add-after 'install 'wrap-binary
