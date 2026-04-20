@@ -96,7 +96,7 @@ jobs:
           if [ -n "$existing" ]; then
             gh issue edit "$existing" --body "$body"
             gh issue comment "$existing" \
-              --body "Vérifié le $(date -u '+%Y-%m-%d'), encore à mettre à jour."
+              --body "Vérifié le $(LC_TIME=fr_FR.UTF-8 date -u '+%d %B %Y'), encore à mettre à jour."
           else
             gh issue create \
               --title "chore: outdated packages" \
