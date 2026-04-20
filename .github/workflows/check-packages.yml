@@ -63,7 +63,6 @@ jobs:
           fi
 
       - name: Ensure label exists
-        if: steps.check.outputs.has_outdated == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -71,51 +70,53 @@ jobs:
             --color "e4e669" \
             --description "Package needs version bump" 2>/dev/null || true
 
-      - name: Create or update issue
+      - name: Create or update issues
         if: steps.check.outputs.has_outdated == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPORT: ${{ steps.check.outputs.report }}
         run: |
-          body=$(cat <<EOF
-          ## Packages à mettre à jour
+          echo "$REPORT" | while IFS= read -r line; do
+            pkg=$(echo "$line" | sed 's/.*: \([^ ]*\) would be upgraded from.*/\1/')
+            old=$(echo "$line" | sed 's/.*upgraded from \([^ ]*\) to.*/\1/')
+            new=$(echo "$line" | sed 's/.*upgraded from [^ ]* to \([^ ]*\)/\1/')
 
-          \`\`\`
-          ${REPORT}
-          \`\`\`
+            title="update ${pkg}: ${old} → ${new}"
 
-          EOF
-          )
+            existing=$(gh issue list \
+              --label "outdated-packages" \
+              --state open \
+              --search "$pkg" \
+              --json number,title \
+              --jq ".[] | select(.title | startswith(\"update ${pkg}:\")) | .number" \
+              | head -1)
 
-          existing=$(gh issue list \
-            --label "outdated-packages" \
-            --state open \
-            --json number \
-            --jq '.[0].number // empty')
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --title "$title"
+            else
+              gh issue create \
+                --title "$title" \
+                --body "Nouvelle version \`${new}\` disponible pour \`${pkg}\` (actuellement \`${old}\`)." \
+                --label "outdated-packages"
+            fi
+          done
 
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" --body "$body"
-            gh issue comment "$existing" \
-              --body "Vérifié le $(LC_TIME=fr_FR.UTF-8 date -u '+%d %B %Y'), encore à mettre à jour."
-          else
-            gh issue create \
-              --title "chore: outdated packages" \
-              --body "$body" \
-              --label "outdated-packages"
-          fi
-
-      - name: Close resolved issue
-        if: steps.check.outputs.has_outdated == 'false'
+      - name: Close resolved issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.check.outputs.report }}
         run: |
-          existing=$(gh issue list \
+          outdated_pkgs=$(echo "$REPORT" | sed 's/.*: \([^ ]*\) would be upgraded from.*/\1/' | sort)
+
+          gh issue list \
             --label "outdated-packages" \
             --state open \
-            --json number \
-            --jq '.[0].number // empty')
+            --json number,title \
+            --jq '.[] | "\(.number) \(.title)"' | while IFS= read -r entry; do
+              number=$(echo "$entry" | awk '{print $1}')
+              pkg=$(echo "$entry" | sed 's/^[0-9]* update \([^:]*\):.*/\1/')
 
-          if [ -n "$existing" ]; then
-            gh issue close "$existing" \
-              --comment "Tous les paquets sont à jour."
-          fi
+              if ! echo "$outdated_pkgs" | grep -qx "$pkg"; then
+                gh issue close "$number" --comment "Paquet \`${pkg}\` à jour."
+              fi
+            done
