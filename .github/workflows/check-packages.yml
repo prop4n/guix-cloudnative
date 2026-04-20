@@ -1,0 +1,121 @@
+name: Check package versions
+
+on:
+  push:
+    branches: [dev]
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Guix
+        run: |
+          curl -L https://guix.gnu.org/install.sh -o /tmp/guix-install.sh
+          chmod +x /tmp/guix-install.sh
+          echo | sudo /tmp/guix-install.sh
+          sudo systemctl start guix-daemon
+          echo "$HOME/.config/guix/current/bin" >> $GITHUB_PATH
+
+      - name: Get week (cache key)
+        id: date
+        run: echo "week=$(date +%Y-%V)" >> $GITHUB_OUTPUT
+
+      - name: Cache guix pull
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/guix
+          key: guix-pull-${{ runner.os }}-${{ steps.date.outputs.week }}
+
+      - name: guix pull
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: guix pull
+
+      - name: List packages and run guix refresh
+        id: check
+        run: |
+          packages=$(guix repl -- scripts/list-packages.scm | tr '\n' ' ')
+
+          output=$(LANG=C guix refresh --load-path=. $packages 2>&1 || true)
+          echo "$output"
+
+          outdated=$(echo "$output" | grep "would be upgraded" || true)
+
+          if [ -n "$outdated" ]; then
+            echo "has_outdated=true" >> $GITHUB_OUTPUT
+            {
+              echo "report<<REPORT_EOF"
+              echo "$outdated"
+              echo "REPORT_EOF"
+            } >> $GITHUB_OUTPUT
+          else
+            echo "has_outdated=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Ensure label exists
+        if: steps.check.outputs.has_outdated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "outdated-packages" \
+            --color "e4e669" \
+            --description "Package needs version bump" 2>/dev/null || true
+
+      - name: Create or update issue
+        if: steps.check.outputs.has_outdated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.check.outputs.report }}
+        run: |
+          body=$(cat <<EOF
+          ## Packages à mettre à jour
+
+          \`\`\`
+          ${REPORT}
+          \`\`\`
+
+          EOF
+          )
+
+          existing=$(gh issue list \
+            --label "outdated-packages" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body "$body"
+            gh issue comment "$existing" \
+              --body "Vérifié le $(date -u '+%Y-%m-%d'), encore à mettre à jour."
+          else
+            gh issue create \
+              --title "chore: outdated packages" \
+              --body "$body" \
+              --label "outdated-packages"
+          fi
+
+      - name: Close resolved issue
+        if: steps.check.outputs.has_outdated == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing=$(gh issue list \
+            --label "outdated-packages" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --comment "Tous les paquets sont à jour."
+          fi
