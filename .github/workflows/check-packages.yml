@@ -26,21 +26,6 @@ jobs:
           sudo systemctl start guix-daemon
           echo "$HOME/.config/guix/current/bin" >> $GITHUB_PATH
 
-      - name: Get week (cache key)
-        id: date
-        run: echo "week=$(date +%Y-%V)" >> $GITHUB_OUTPUT
-
-      - name: Cache guix pull
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/guix
-          key: guix-pull-${{ runner.os }}-${{ steps.date.outputs.week }}
-
-      - name: guix pull
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: guix pull
-
       - name: List packages and run guix refresh
         id: check
         run: |
