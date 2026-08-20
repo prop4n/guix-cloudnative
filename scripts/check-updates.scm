@@ -1,28 +1,30 @@
 #!/usr/bin/env guile
 !#
 
-;;; Report packages whose upstream GitHub release is newer than the version we
-;;; package.  Run from the repository root:
+;;; Signale les paquets dont la version amont sur GitHub est plus récente que
+;;; celle que nous packageons.  À lancer depuis la racine du dépôt :
 ;;;
 ;;;   guile scripts/check-updates.scm
 ;;;
-;;; Prints one "name<TAB>current<TAB>latest" line per outdated package on
-;;; stdout, and progress on stderr.  Exits non-zero if any package could not be
-;;; checked, so a partial result never passes as a clean run.
+;;; Écrit une ligne « nom<TAB>actuelle<TAB>amont » par paquet en retard sur la
+;;; sortie standard, et la progression sur l'erreur standard.  Sort en erreur
+;;; si un paquet n'a pas pu être vérifié : un résultat partiel ne doit jamais
+;;; passer pour un run réussi.
 ;;;
-;;; This deliberately does not use (guix upstream) and its updaters, which
-;;; would be the idiomatic way to ask for the latest release: loading our
-;;; package modules needs a Guix new enough for everything they import, and
-;;; building that on a stock CI runner costs about twelve minutes per run.  So
-;;; we read the definitions ourselves and ask GitHub directly, which takes
-;;; seconds and needs nothing but Guile.  The cost is that a package hosted
-;;; anywhere else is reported as an error rather than checked -- loudly, so it
-;;; cannot pass unnoticed.
+;;; Ce script n'utilise délibérément pas (guix upstream) et ses updaters, qui
+;;; seraient la façon idiomatique d'interroger la dernière version : charger
+;;; nos modules de paquets exige un Guix assez récent pour tout ce qu'ils
+;;; importent, et le construire sur un runner CI standard coûte une douzaine
+;;; de minutes par run.  On lit donc les définitions nous-mêmes et on
+;;; interroge GitHub directement, ce qui prend quelques secondes et ne demande
+;;; que Guile.  En contrepartie, un paquet hébergé ailleurs est signalé comme
+;;; une erreur plutôt que vérifié — bruyamment, pour qu'il ne passe pas
+;;; inaperçu.
 ;;;
-;;; The definitions are read as data, not scanned as text: `read' gives us the
-;;; S-expressions and we walk them.  Only the two jobs that really are string
-;;; work -- pulling owner/repo out of a URL, and a version out of a tag -- use
-;;; a regexp.
+;;; Les définitions sont lues comme des données, et non parcourues comme du
+;;; texte : « read » nous rend les S-expressions et on les traverse.  Seules
+;;; les deux tâches qui relèvent vraiment du texte — extraire owner/repo d'une
+;;; URL, et une version d'un tag — passent par une expression régulière.
 
 (use-modules (ice-9 regex)
              (ice-9 ftw)
@@ -40,25 +42,28 @@
 (define %feed-tag-rx (make-regexp "/releases/tag/([^\"]+)\""))
 (define %number-rx (make-regexp "[0-9]+"))
 
-;; The version inside a tag: a run of dot-separated numbers, taken with
-;; whatever precedes it discarded.  Anchored on a digit that does not follow
-;; another digit or a dot, so 1.4.0 in bun-v1.4.0 is not read as 4.0.
+;; La version contenue dans un tag : une suite de nombres séparés par des
+;; points, dont on jette tout ce qui précède.  Ancrée sur un chiffre qui ne
+;; suit ni un autre chiffre ni un point, pour que le 1.4.0 de bun-v1.4.0 ne
+;; soit pas lu comme 4.0.
 (define %version-in-tag-rx
   (make-regexp "(^|[^0-9.])([0-9]+(\\.[0-9]+)+)"))
 
 (define (capture rx str n)
-  "Return capture group N of RX in STR, or #f if RX does not match."
+  "Renvoie le groupe de capture N de RX dans STR, ou #f si RX ne correspond
+pas."
   (let ((m (regexp-exec rx str)))
     (and m (match:substring m n))))
 
 
 ;;;
-;;; Reading package definitions.
+;;; Lecture des définitions de paquets.
 ;;;
 
-;; Package definitions carry gexps, which the plain Guile reader does not
-;; know.  Teach it just enough to read them as data -- we never evaluate what
-;; comes back, so any placeholder will do.
+;; Les définitions de paquets contiennent des gexps, que le lecteur Guile nu
+;; ne connaît pas.  On lui en apprend juste assez pour les lire comme des
+;; données : comme on n'évalue jamais ce qui en ressort, n'importe quel
+;; marqueur fait l'affaire.
 (read-hash-extend #\~ (lambda (chr port) (list 'gexp (read port))))
 (read-hash-extend #\$ (lambda (chr port)
                         (case (peek-char port)
@@ -67,7 +72,7 @@
                           (else (list 'ungexp (read port))))))
 
 (define (read-forms file)
-  "Return the top-level forms of FILE, read as data."
+  "Renvoie les formes de premier niveau de FILE, lues comme des données."
   (call-with-input-file file
     (lambda (port)
       (let loop ((forms '()))
@@ -77,9 +82,10 @@
               (loop (cons form forms))))))))
 
 (define (field form name)
-  "Return the argument of the (NAME argument) sub-form of FORM, at any depth,
-or #f if there is none.  The first hit in reading order wins, which for a
-conventionally written package is its own field rather than an input's."
+  "Renvoie l'argument de la sous-forme (NAME argument) de FORM, à n'importe
+quelle profondeur, ou #f s'il n'y en a pas.  La première occurrence dans
+l'ordre de lecture l'emporte, ce qui pour un paquet écrit conventionnellement
+correspond à son propre champ plutôt qu'à celui d'une entrée."
   (and (pair? form)
        (if (and (eq? (car form) name)
                 (pair? (cdr form)))
@@ -88,7 +94,7 @@ conventionally written package is its own field rather than an input's."
                 (filter pair? form)))))
 
 (define (strings-in form)
-  "Return every string in FORM, in the order they appear."
+  "Renvoie toutes les chaînes de FORM, dans leur ordre d'apparition."
   (cond ((string? form) (list form))
         ((pair? form) (append-map strings-in form))
         (else '())))
@@ -99,10 +105,10 @@ conventionally written package is its own field rather than an input's."
       name))
 
 (define (form->repository form)
-  "Return the \"owner/repo\" of the first GitHub URL in FORM, or #f.  URLs are
-often assembled with string-append, so look at every string rather than
-expecting one to be the whole address.  Taking the first keeps the source URL
-ahead of a home-page pointing somewhere else."
+  "Renvoie le « owner/repo » de la première URL GitHub de FORM, ou #f.  Les
+URL sont souvent assemblées avec string-append, d'où l'examen de chaque
+chaîne plutôt que l'attente d'une adresse complète.  Prendre la première
+place l'URL de la source avant une home-page qui pointerait ailleurs."
   (any (lambda (str)
          (let ((m (regexp-exec %repo-rx str)))
            (and m
@@ -111,9 +117,9 @@ ahead of a home-page pointing somewhere else."
        (strings-in form)))
 
 (define (definition->package form)
-  "Return (name version repository) for FORM when it defines a package we
-track, else #f.  go-* packages are Go dependencies pinned to a commit, with
-no releases to follow."
+  "Renvoie (nom version dépôt) pour FORM lorsqu'elle définit un paquet que
+nous suivons, sinon #f.  Les paquets go-* sont des dépendances Go épinglées
+sur un commit, sans version amont à suivre."
   (and (pair? form)
        (eq? (car form) 'define-public)
        (let ((name (field form 'name))
@@ -134,30 +140,31 @@ no releases to follow."
 
 
 ;;;
-;;; Querying GitHub.
+;;; Interrogation de GitHub.
 ;;;
 
 (define %redirect-codes '(301 302 303 307 308))
 (define %max-redirects 5)
-(define %request-timeout 20)            ;seconds
+(define %request-timeout 20)            ;secondes
 (define %request-attempts 2)
 
-;; Guile has no timeout on http-request, and a stalled connection would
-;; otherwise hang the run for as long as the far end keeps it open.
+;; Guile n'offre pas de délai d'attente sur http-request, et une connexion
+;; bloquée suspendrait le run aussi longtemps que l'autre bout la maintient
+;; ouverte.
 (sigaction SIGALRM (lambda (signal) (throw 'request-timeout)))
 
 (define (call-with-timeout seconds thunk)
-  "Run THUNK, giving up on it after SECONDS."
+  "Exécute THUNK, en l'abandonnant au bout de SECONDS."
   (dynamic-wind
     (lambda () (alarm seconds))
     thunk
     (lambda () (alarm 0))))
 
 (define (request url method)
-  "Perform METHOD on URL and return (response body).  Retries once, because a
-weekly version check should not fail over a hiccup, then throws
-'network-failure: the caller turns that into a message for one package rather
-than letting it take down the whole run."
+  "Effectue METHOD sur URL et renvoie (réponse corps).  Réessaie une fois, car
+une vérification hebdomadaire ne devrait pas échouer sur un incident passager,
+puis lève 'network-failure : l'appelant la convertit en message pour un seul
+paquet, au lieu de la laisser emporter tout le run."
   (let attempt ((remaining %request-attempts))
     (catch #t
       (lambda ()
@@ -174,9 +181,9 @@ than letting it take down the whole run."
             (throw 'network-failure url key))))))
 
 (define (follow-redirects url)
-  "Return the URL that URL finally lands on, or #f if it never stops
-redirecting.  A renamed repository redirects to its new name before
-/releases/latest redirects to a tag, so one hop is not enough."
+  "Renvoie l'URL finale sur laquelle URL aboutit, ou #f si elle ne cesse
+jamais de rediriger.  Un dépôt renommé redirige vers son nouveau nom avant que
+/releases/latest ne redirige vers un tag : un seul saut ne suffit pas."
   (let loop ((url url) (hops 0))
     (if (> hops %max-redirects)
         #f
@@ -188,16 +195,17 @@ redirecting.  A renamed repository redirects to its new name before
               url)))))
 
 (define (published-release-tag repository)
-  "Return the tag of REPOSITORY's newest published release, or #f if it has
-none.  /releases/latest redirects to the release's tag page, which saves
-hitting the API and the token it wants."
+  "Renvoie le tag de la dernière release publiée de REPOSITORY, ou #f s'il n'y
+en a aucune.  /releases/latest redirige vers la page du tag de la release, ce
+qui évite l'API et le jeton qu'elle réclame."
   (let ((target (follow-redirects
                  (string-append "https://github.com/" repository
                                 "/releases/latest"))))
     (and target (capture %tag-rx target 1))))
 
 (define (fetch url)
-  "Return the body of URL as a string, or #f if it answers anything but 200."
+  "Renvoie le corps de URL sous forme de chaîne, ou #f si elle répond autre
+chose que 200."
   (let* ((result (request url 'GET))
          (response (first result))
          (body (second result)))
@@ -205,10 +213,11 @@ hitting the API and the token it wants."
          (if (string? body) body (utf8->string body)))))
 
 (define (newest-tag repository)
-  "Return the highest version tag of REPOSITORY, or #f.  Plenty of projects
-push tags without ever publishing a GitHub release, so this is what makes
-those checkable at all.  The feed lists tags newest-first, but ordered by
-creation date, so pick the highest version rather than the first entry."
+  "Renvoie le tag de version le plus élevé de REPOSITORY, ou #f.  Beaucoup de
+projets poussent des tags sans jamais publier de release GitHub : c'est ce qui
+les rend vérifiables malgré tout.  Le flux liste les tags du plus récent au
+plus ancien, mais par date de création, d'où le choix de la version la plus
+haute plutôt que de la première entrée."
   (let ((feed (fetch (string-append "https://github.com/" repository
                                     "/tags.atom"))))
     (and feed
@@ -223,15 +232,15 @@ creation date, so pick the highest version rather than the first entry."
                (list-matches %feed-tag-rx feed)))))
 
 (define (latest-version repository)
-  "Return REPOSITORY's newest version, from its releases if it publishes any
-and from its tags otherwise."
+  "Renvoie la version amont de REPOSITORY : celle de ses releases s'il en
+publie, celle de ses tags sinon."
   (let ((tag (published-release-tag repository)))
     (or (and tag (tag->version tag))
         (newest-tag repository))))
 
 
 ;;;
-;;; Comparing versions.
+;;; Comparaison des versions.
 ;;;
 
 (define (version->numbers version)
@@ -239,8 +248,9 @@ and from its tags otherwise."
        (list-matches %number-rx version)))
 
 (define (version-newer? version other)
-  "Is VERSION newer than OTHER?  Compares the numbers in each, so an upstream
-tag with an unusual shape cannot read as a downgrade."
+  "VERSION est-elle plus récente que OTHER ?  Compare les nombres de chacune,
+afin qu'un tag amont de forme inhabituelle ne puisse pas se lire comme une
+régression."
   (let loop ((version (version->numbers version))
              (other (version->numbers other)))
     (cond ((null? version) #f)
@@ -250,55 +260,56 @@ tag with an unusual shape cannot read as a downgrade."
           (else (loop (cdr version) (cdr other))))))
 
 (define (tag->version tag)
-  "Return the version TAG names, or #f if it names none.
+  "Renvoie la version que TAG désigne, ou #f s'il n'en désigne aucune.
 
-Tags are not just versions: projects prefix them with a name (bun-v1.4.0), a
-component (cli/v2.2.1) or nothing at all (0.10.4).  Take the dotted number
-run and drop whatever leads up to it, so a prefix cannot leak into the
-version we report -- or worse, into the comparison, where a prefix like
-release-2024 would read as a very high major.  A tag with no dotted number,
-such as a CI marker, names no version."
+Un tag n'est pas qu'une version : les projets les préfixent d'un nom
+\(bun-v1.4.0), d'un composant (cli/v2.2.1), ou de rien du tout (0.10.4).  On
+en extrait la suite de nombres pointés en jetant ce qui la précède, pour qu'un
+préfixe ne déborde ni sur la version rapportée ni, pire, sur la comparaison —
+où un préfixe comme release-2024 se lirait comme un numéro majeur très élevé.
+Un tag sans nombre pointé, tel un marqueur de CI, ne désigne aucune version."
   (capture %version-in-tag-rx tag 2))
 
 
 ;;;
-;;; Reporting.
+;;; Restitution.
 ;;;
 
 (define (report package)
-  "Print PACKAGE's status.  Return a message if it could not be checked, else #f."
+  "Affiche l'état de PACKAGE.  Renvoie un message s'il n'a pas pu être
+vérifié, sinon #f."
   (let ((name (first package))
         (version (second package))
         (repository (third package)))
     (if (not repository)
-        (format #f "~a: no GitHub URL in its definition" name)
+        (format #f "~a : aucune URL GitHub dans sa définition" name)
         (catch 'network-failure
           (lambda ()
             (let ((latest (latest-version repository)))
               (cond
                ((not latest)
-                (format #f "~a: ~a has no release or version tag"
+                (format #f "~a : ~a n'a ni release ni tag de version"
                         name repository))
                ((version-newer? latest version)
                 (format #t "~a\t~a\t~a~%" name version latest)
-                (format (current-error-port) "~a: ~a -> ~a~%"
+                (format (current-error-port) "~a : ~a -> ~a~%"
                         name version latest)
                 #f)
                (else
-                (format (current-error-port) "~a: ~a up to date~%"
+                (format (current-error-port) "~a : ~a à jour~%"
                         name version)
                 #f))))
-          ;; One unreachable host is reported like any other unchecked
-          ;; package, so the rest of the run still gets done.
+          ;; Un hôte injoignable est signalé comme n'importe quel autre paquet
+          ;; non vérifié, pour que le reste du run aille à son terme.
           (lambda (key url reason)
-            (format #f "~a: cannot reach ~a (~a)" name url reason))))))
+            (format #f "~a : ~a injoignable (~a)" name url reason))))))
 
 (define (main)
   (let ((unchecked (filter-map report
                                (append-map packages-in
                                            (package-files %package-directory)))))
     (unless (null? unchecked)
-      (format (current-error-port) "~%failed to check:~%")
+      (format (current-error-port) "~%paquets non vérifiés :~%")
       (for-each (lambda (message)
                   (format (current-error-port) "  ~a~%" message))
                 unchecked)
