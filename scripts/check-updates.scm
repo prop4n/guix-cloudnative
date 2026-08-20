@@ -46,15 +46,15 @@
 (define %version-in-tag-rx
   (make-regexp "(^|[^0-9.])([0-9]+(\\.[0-9]+)+)"))
 
-
-;;;
-;;; Reading package definitions.
-;;;
-
 (define (capture rx str n)
   "Return capture group N of RX in STR, or #f if RX does not match."
   (let ((m (regexp-exec rx str)))
     (and m (match:substring m n))))
+
+
+;;;
+;;; Reading package definitions.
+;;;
 
 ;; Package definitions carry gexps, which the plain Guile reader does not
 ;; know.  Teach it just enough to read them as data -- we never evaluate what
@@ -78,8 +78,8 @@
 
 (define (field form name)
   "Return the argument of the (NAME argument) sub-form of FORM, at any depth,
-or #f if there is none.  Recursion stops at the first hit, so the package's
-own (name ...) wins over one belonging to an input."
+or #f if there is none.  The first hit in reading order wins, which for a
+conventionally written package is its own field rather than an input's."
   (and (pair? form)
        (if (and (eq? (car form) name)
                 (pair? (cdr form)))
@@ -93,6 +93,11 @@ own (name ...) wins over one belonging to an input."
         ((pair? form) (append-map strings-in form))
         (else '())))
 
+(define (strip-git-suffix name)
+  (if (string-suffix? ".git" name)
+      (string-drop-right name 4)
+      name))
+
 (define (form->repository form)
   "Return the \"owner/repo\" of the first GitHub URL in FORM, or #f.  URLs are
 often assembled with string-append, so look at every string rather than
@@ -104,11 +109,6 @@ ahead of a home-page pointing somewhere else."
                 (string-append (match:substring m 1) "/"
                                (strip-git-suffix (match:substring m 2))))))
        (strings-in form)))
-
-(define (strip-git-suffix name)
-  (if (string-suffix? ".git" name)
-      (string-drop-right name 4)
-      name))
 
 (define (definition->package form)
   "Return (name version repository) for FORM when it defines a package we
@@ -139,6 +139,39 @@ no releases to follow."
 
 (define %redirect-codes '(301 302 303 307 308))
 (define %max-redirects 5)
+(define %request-timeout 20)            ;seconds
+(define %request-attempts 2)
+
+;; Guile has no timeout on http-request, and a stalled connection would
+;; otherwise hang the run for as long as the far end keeps it open.
+(sigaction SIGALRM (lambda (signal) (throw 'request-timeout)))
+
+(define (call-with-timeout seconds thunk)
+  "Run THUNK, giving up on it after SECONDS."
+  (dynamic-wind
+    (lambda () (alarm seconds))
+    thunk
+    (lambda () (alarm 0))))
+
+(define (request url method)
+  "Perform METHOD on URL and return (response body).  Retries once, because a
+weekly version check should not fail over a hiccup, then throws
+'network-failure: the caller turns that into a message for one package rather
+than letting it take down the whole run."
+  (let attempt ((remaining %request-attempts))
+    (catch #t
+      (lambda ()
+        (call-with-timeout %request-timeout
+          (lambda ()
+            (call-with-values
+                (lambda ()
+                  (http-request url #:method method
+                                #:streaming? (eq? method 'HEAD)))
+              list))))
+      (lambda (key . args)
+        (if (> remaining 1)
+            (begin (sleep 1) (attempt (- remaining 1)))
+            (throw 'network-failure url key))))))
 
 (define (follow-redirects url)
   "Return the URL that URL finally lands on, or #f if it never stops
@@ -147,15 +180,12 @@ redirecting.  A renamed repository redirects to its new name before
   (let loop ((url url) (hops 0))
     (if (> hops %max-redirects)
         #f
-        (call-with-values
-            (lambda ()
-              (http-request url #:method 'HEAD #:streaming? #t))
-          (lambda (response body)
-            (if (memv (response-code response) %redirect-codes)
-                (loop (uri->string
-                       (assq-ref (response-headers response) 'location))
-                      (+ hops 1))
-                url))))))
+        (let ((response (first (request url 'HEAD))))
+          (if (memv (response-code response) %redirect-codes)
+              (loop (uri->string
+                     (assq-ref (response-headers response) 'location))
+                    (+ hops 1))
+              url)))))
 
 (define (published-release-tag repository)
   "Return the tag of REPOSITORY's newest published release, or #f if it has
@@ -167,11 +197,12 @@ hitting the API and the token it wants."
     (and target (capture %tag-rx target 1))))
 
 (define (fetch url)
-  "Return the body of URL as a string, or #f if it cannot be read."
-  (call-with-values (lambda () (http-request url #:method 'GET))
-    (lambda (response body)
-      (and (= 200 (response-code response))
-           (if (string? body) body (utf8->string body))))))
+  "Return the body of URL as a string, or #f if it answers anything but 200."
+  (let* ((result (request url 'GET))
+         (response (first result))
+         (body (second result)))
+    (and (= 200 (response-code response))
+         (if (string? body) body (utf8->string body)))))
 
 (define (newest-tag repository)
   "Return the highest version tag of REPOSITORY, or #f.  Plenty of projects
@@ -241,17 +272,26 @@ such as a CI marker, names no version."
         (repository (third package)))
     (if (not repository)
         (format #f "~a: no GitHub URL in its definition" name)
-        (let ((latest (latest-version repository)))
-          (cond
-           ((not latest)
-            (format #f "~a: ~a has no release or version tag" name repository))
-           ((version-newer? latest version)
-            (format #t "~a\t~a\t~a~%" name version latest)
-            (format (current-error-port) "~a: ~a -> ~a~%" name version latest)
-            #f)
-           (else
-            (format (current-error-port) "~a: ~a up to date~%" name version)
-            #f))))))
+        (catch 'network-failure
+          (lambda ()
+            (let ((latest (latest-version repository)))
+              (cond
+               ((not latest)
+                (format #f "~a: ~a has no release or version tag"
+                        name repository))
+               ((version-newer? latest version)
+                (format #t "~a\t~a\t~a~%" name version latest)
+                (format (current-error-port) "~a: ~a -> ~a~%"
+                        name version latest)
+                #f)
+               (else
+                (format (current-error-port) "~a: ~a up to date~%"
+                        name version)
+                #f))))
+          ;; One unreachable host is reported like any other unchecked
+          ;; package, so the rest of the run still gets done.
+          (lambda (key url reason)
+            (format #f "~a: cannot reach ~a (~a)" name url reason))))))
 
 (define (main)
   (let ((unchecked (filter-map report
