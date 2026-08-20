@@ -18,24 +18,43 @@ concurrency:
 jobs:
   check-versions:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Guile
-        run: sudo apt-get install -y --no-install-recommends guile-3.0
+      # TODO: drop these two steps once the Forgejo runner is up -- it will
+      # have Guix and the channel already, which is the whole reason this job
+      # is slow here.  On GitHub's runners we have to build that from scratch:
+      # `guix pull` for (gnu packages kubernetes), which kubeseal imports and
+      # the 1.5.0 binary does not carry.
+      - name: Install Guix
+        run: |
+          curl -L https://guix.gnu.org/install.sh -o /tmp/guix-install.sh
+          chmod +x /tmp/guix-install.sh
+          # install.sh hardcodes ftpmirror.gnu.org, whose redirector 502s on
+          # the .sig file often enough to break the install outright.
+          sed -i 's|https://ftpmirror.gnu.org/gnu/guix/|https://ftp.gnu.org/gnu/guix/|' /tmp/guix-install.sh
+          echo | sudo /tmp/guix-install.sh
+          sudo systemctl start guix-daemon
+          guix pull
+          echo "$HOME/.config/guix/current/bin" >> $GITHUB_PATH
 
-      # scripts/check-updates.scm reads the package definitions as text and
-      # follows GitHub's /releases/latest redirect, so no Guix is needed here.
-      # Going through `guix refresh` meant a `guix pull` on every run, which
-      # took ~12 minutes and kept failing.
+      # gh uses (nonguix build-system binary).  A shallow checkout on the load
+      # path is enough: we only read the definitions, we never build them.
+      - name: Fetch nonguix
+        run: git clone --depth 1 https://gitlab.com/nonguix/nonguix /tmp/nonguix
+
       - name: Check for updates
         id: check
+        env:
+          # Without a token the GitHub updater hits the 60 req/h anonymous
+          # rate limit and reports packages as up to date.
+          GUIX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The script exits non-zero if any package could not be checked, so
           # a partial result fails the job instead of passing as green.
-          report=$(guile --no-auto-compile scripts/check-updates.scm)
+          report=$(guix repl -L /tmp/nonguix -- scripts/check-updates.scm)
 
           if [ -n "$report" ]; then
             echo "has_outdated=true" >> $GITHUB_OUTPUT
