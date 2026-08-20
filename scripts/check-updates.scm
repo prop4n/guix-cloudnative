@@ -23,6 +23,7 @@
              (ice-9 textual-ports)
              (ice-9 ftw)
              (srfi srfi-1)
+             (rnrs bytevectors)
              (web client)
              (web response)
              (web uri))
@@ -35,7 +36,14 @@
 (define %repo-rx
   (make-regexp "github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"))
 (define %tag-rx (make-regexp "/releases/tag/(.+)$"))
+(define %feed-tag-rx (make-regexp "/releases/tag/([^\"]+)\""))
 (define %number-rx (make-regexp "[0-9]+"))
+
+;; The version inside a tag: a run of dot-separated numbers, taken with
+;; whatever precedes it discarded.  Anchored on a digit that does not follow
+;; another digit or a dot, so 1.4.0 in bun-v1.4.0 is not read as 4.0.
+(define %version-in-tag-rx
+  (make-regexp "(^|[^0-9.])([0-9]+(\\.[0-9]+)+)" ))
 
 
 ;;;
@@ -48,15 +56,20 @@
     (and m (match:substring m n))))
 
 (define (split-definitions content)
-  "Return CONTENT split into one string per top-level define-public form."
-  (let ((matches (list-matches %define-public-rx content)))
-    (map (lambda (this rest)
-           (substring content (match:end this)
-                      (if (null? rest)
-                          (string-length content)
-                          (match:start (car rest)))))
-         matches
-         (append (map list (cdr matches)) '(())))))
+  "Return CONTENT split into one string per top-level define-public form.
+CONTENT may hold none at all: a file of plain definitions, such as the output
+of one of the Guix importers, is not an error."
+  (let loop ((matches (list-matches %define-public-rx content))
+             (result '()))
+    (if (null? matches)
+        (reverse result)
+        (loop (cdr matches)
+              (cons (substring content
+                               (match:end (car matches))
+                               (if (null? (cdr matches))
+                                   (string-length content)
+                                   (match:start (cadr matches))))
+                    result)))))
 
 (define (strip-git-suffix name)
   (if (string-suffix? ".git" name)
@@ -114,14 +127,46 @@ redirecting.  A renamed repository redirects to its new name before
                       (+ hops 1))
                 url))))))
 
-(define (latest-release repository)
-  "Return the tag of REPOSITORY's newest release, or #f if it has none.
-/releases/latest redirects to the release's tag page, which saves hitting the
-API and the token it wants."
+(define (published-release-tag repository)
+  "Return the tag of REPOSITORY's newest published release, or #f if it has
+none.  /releases/latest redirects to the release's tag page, which saves
+hitting the API and the token it wants."
   (let ((target (follow-redirects
                  (string-append "https://github.com/" repository
                                 "/releases/latest"))))
     (and target (capture %tag-rx target 1))))
+
+(define (fetch url)
+  "Return the body of URL as a string, or #f if it cannot be read."
+  (call-with-values (lambda () (http-request url #:method 'GET))
+    (lambda (response body)
+      (and (= 200 (response-code response))
+           (if (string? body) body (utf8->string body))))))
+
+(define (newest-tag repository)
+  "Return the highest version tag of REPOSITORY, or #f.  Plenty of projects
+push tags without ever publishing a GitHub release, so this is what makes
+those checkable at all.  The feed lists tags newest-first, but ordered by
+creation date, so pick the highest version rather than the first entry."
+  (let ((feed (fetch (string-append "https://github.com/" repository
+                                    "/tags.atom"))))
+    (and feed
+         (fold (lambda (match best)
+                 (let ((version (tag->version
+                                 (uri-decode (match:substring match 1)))))
+                   (cond ((not version) best)
+                         ((not best) version)
+                         ((version-newer? version best) version)
+                         (else best))))
+               #f
+               (list-matches %feed-tag-rx feed)))))
+
+(define (latest-version repository)
+  "Return REPOSITORY's newest version, from its releases if it publishes any
+and from its tags otherwise."
+  (let ((tag (published-release-tag repository)))
+    (or (and tag (tag->version tag))
+        (newest-tag repository))))
 
 
 ;;;
@@ -143,12 +188,16 @@ tag with an unusual shape cannot read as a downgrade."
           ((< (car version) (car other)) #f)
           (else (loop (cdr version) (cdr other))))))
 
-(define (strip-v tag)
-  "Drop the leading v of a tag such as v1.2.3."
-  (if (and (not (string-null? tag))
-           (memv (string-ref tag 0) '(#\v #\V)))
-      (string-drop tag 1)
-      tag))
+(define (tag->version tag)
+  "Return the version TAG names, or #f if it names none.
+
+Tags are not just versions: projects prefix them with a name (bun-v1.4.0), a
+component (cli/v2.2.1) or nothing at all (0.10.4).  Take the dotted number
+run and drop whatever leads up to it, so a prefix cannot leak into the
+version we report -- or worse, into the comparison, where a prefix like
+release-2024 would read as a very high major.  A tag with no dotted number,
+such as a CI marker, names no version."
+  (capture %version-in-tag-rx tag 2))
 
 
 ;;;
@@ -162,19 +211,17 @@ tag with an unusual shape cannot read as a downgrade."
         (repository (third package)))
     (if (not repository)
         (format #f "~a: no GitHub URL in its definition" name)
-        (let ((tag (latest-release repository)))
+        (let ((latest (latest-version repository)))
           (cond
-           ((not tag)
-            (format #f "~a: ~a has no releases" name repository))
+           ((not latest)
+            (format #f "~a: ~a has no release or version tag" name repository))
+           ((version-newer? latest version)
+            (format #t "~a\t~a\t~a~%" name version latest)
+            (format (current-error-port) "~a: ~a -> ~a~%" name version latest)
+            #f)
            (else
-            (let ((latest (strip-v tag)))
-              (when (version-newer? latest version)
-                (format #t "~a\t~a\t~a~%" name version latest))
-              (format (current-error-port) "~a: ~a~a~%" name version
-                      (if (version-newer? latest version)
-                          (format #f " -> ~a" latest)
-                          " up to date"))
-              #f)))))))
+            (format (current-error-port) "~a: ~a up to date~%" name version)
+            #f))))))
 
 (define (main)
   (let ((unchecked (filter-map report
