@@ -14,13 +14,17 @@
 ;;; would be the idiomatic way to ask for the latest release: loading our
 ;;; package modules needs a Guix new enough for everything they import, and
 ;;; building that on a stock CI runner costs about twelve minutes per run.  So
-;;; we read the definitions as text and ask GitHub directly, which takes
+;;; we read the definitions ourselves and ask GitHub directly, which takes
 ;;; seconds and needs nothing but Guile.  The cost is that a package hosted
 ;;; anywhere else is reported as an error rather than checked -- loudly, so it
 ;;; cannot pass unnoticed.
+;;;
+;;; The definitions are read as data, not scanned as text: `read' gives us the
+;;; S-expressions and we walk them.  Only the two jobs that really are string
+;;; work -- pulling owner/repo out of a URL, and a version out of a tag -- use
+;;; a regexp.
 
 (use-modules (ice-9 regex)
-             (ice-9 textual-ports)
              (ice-9 ftw)
              (srfi srfi-1)
              (rnrs bytevectors)
@@ -30,9 +34,6 @@
 
 (define %package-directory "guix-cloudnative/packages")
 
-(define %define-public-rx (make-regexp "\\(define-public[ \t\n]+"))
-(define %name-rx (make-regexp "\\(name[ \t\n]+\"([^\"]+)\""))
-(define %version-rx (make-regexp "\\(version[ \t\n]+\"([^\"]+)\""))
 (define %repo-rx
   (make-regexp "github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)"))
 (define %tag-rx (make-regexp "/releases/tag/(.+)$"))
@@ -43,7 +44,7 @@
 ;; whatever precedes it discarded.  Anchored on a digit that does not follow
 ;; another digit or a dot, so 1.4.0 in bun-v1.4.0 is not read as 4.0.
 (define %version-in-tag-rx
-  (make-regexp "(^|[^0-9.])([0-9]+(\\.[0-9]+)+)" ))
+  (make-regexp "(^|[^0-9.])([0-9]+(\\.[0-9]+)+)"))
 
 
 ;;;
@@ -55,46 +56,75 @@
   (let ((m (regexp-exec rx str)))
     (and m (match:substring m n))))
 
-(define (split-definitions content)
-  "Return CONTENT split into one string per top-level define-public form.
-CONTENT may hold none at all: a file of plain definitions, such as the output
-of one of the Guix importers, is not an error."
-  (let loop ((matches (list-matches %define-public-rx content))
-             (result '()))
-    (if (null? matches)
-        (reverse result)
-        (loop (cdr matches)
-              (cons (substring content
-                               (match:end (car matches))
-                               (if (null? (cdr matches))
-                                   (string-length content)
-                                   (match:start (cadr matches))))
-                    result)))))
+;; Package definitions carry gexps, which the plain Guile reader does not
+;; know.  Teach it just enough to read them as data -- we never evaluate what
+;; comes back, so any placeholder will do.
+(read-hash-extend #\~ (lambda (chr port) (list 'gexp (read port))))
+(read-hash-extend #\$ (lambda (chr port)
+                        (case (peek-char port)
+                          ((#\@) (read-char port)
+                                 (list 'ungexp-splicing (read port)))
+                          (else (list 'ungexp (read port))))))
+
+(define (read-forms file)
+  "Return the top-level forms of FILE, read as data."
+  (call-with-input-file file
+    (lambda (port)
+      (let loop ((forms '()))
+        (let ((form (read port)))
+          (if (eof-object? form)
+              (reverse forms)
+              (loop (cons form forms))))))))
+
+(define (field form name)
+  "Return the argument of the (NAME argument) sub-form of FORM, at any depth,
+or #f if there is none.  Recursion stops at the first hit, so the package's
+own (name ...) wins over one belonging to an input."
+  (and (pair? form)
+       (if (and (eq? (car form) name)
+                (pair? (cdr form)))
+           (cadr form)
+           (any (lambda (sub) (field sub name))
+                (filter pair? form)))))
+
+(define (strings-in form)
+  "Return every string in FORM, in the order they appear."
+  (cond ((string? form) (list form))
+        ((pair? form) (append-map strings-in form))
+        (else '())))
+
+(define (form->repository form)
+  "Return the \"owner/repo\" of the first GitHub URL in FORM, or #f.  URLs are
+often assembled with string-append, so look at every string rather than
+expecting one to be the whole address.  Taking the first keeps the source URL
+ahead of a home-page pointing somewhere else."
+  (any (lambda (str)
+         (let ((m (regexp-exec %repo-rx str)))
+           (and m
+                (string-append (match:substring m 1) "/"
+                               (strip-git-suffix (match:substring m 2))))))
+       (strings-in form)))
 
 (define (strip-git-suffix name)
   (if (string-suffix? ".git" name)
       (string-drop-right name 4)
       name))
 
-(define (tracked-package definition)
-  "Return (name version repository) for DEFINITION, where repository is the
-\"owner/repo\" it lives in or #f if it names no GitHub URL.  Return #f when
-DEFINITION holds no package, or a go-* one: those are Go dependencies pinned
-to a commit, with no releases to follow."
-  (let ((name (capture %name-rx definition 1))
-        (version (capture %version-rx definition 1))
-        (repo (regexp-exec %repo-rx definition)))
-    (and name version
-         (not (string-prefix? "go-" name))
-         (list name version
-               (and repo
-                    (string-append (match:substring repo 1) "/"
-                                   (strip-git-suffix
-                                    (match:substring repo 2))))))))
+(define (definition->package form)
+  "Return (name version repository) for FORM when it defines a package we
+track, else #f.  go-* packages are Go dependencies pinned to a commit, with
+no releases to follow."
+  (and (pair? form)
+       (eq? (car form) 'define-public)
+       (let ((name (field form 'name))
+             (version (field form 'version)))
+         (and (string? name)
+              (string? version)
+              (not (string-prefix? "go-" name))
+              (list name version (form->repository form))))))
 
 (define (packages-in file)
-  (filter-map tracked-package
-              (split-definitions (call-with-input-file file get-string-all))))
+  (filter-map definition->package (read-forms file)))
 
 (define (package-files directory)
   (map (lambda (entry) (string-append directory "/" entry))
