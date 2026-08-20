@@ -18,66 +18,30 @@ concurrency:
 jobs:
   check-versions:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Guix
-        run: |
-          curl -L https://guix.gnu.org/install.sh -o /tmp/guix-install.sh
-          chmod +x /tmp/guix-install.sh
-          # install.sh hardcodes ftpmirror.gnu.org, whose redirector regularly
-          # 502s on the .sig file and aborts the install.  Use ftp.gnu.org.
-          sed -i 's|https://ftpmirror.gnu.org/gnu/guix/|https://ftp.gnu.org/gnu/guix/|' /tmp/guix-install.sh
-          echo | sudo /tmp/guix-install.sh
-          sudo systemctl start guix-daemon
+      - name: Install Guile
+        run: sudo apt-get install -y --no-install-recommends guile-3.0
 
-      # kubeseal needs (gnu packages kubernetes), absent from the 1.5.0 binary.
-      # Only the guix channel is pulled, so this is served by substitutes
-      # instead of being rebuilt; nonguix is supplied via -L below because it
-      # has no substitutes and would have to be compiled during the pull.
-      - name: guix pull
-        run: |
-          guix pull
-          echo "$HOME/.config/guix/current/bin" >> $GITHUB_PATH
-
-      # gh uses (nonguix build-system binary); a shallow checkout on the load
-      # path is enough for `guix refresh`, which never builds anything.
-      - name: Fetch nonguix
-        run: git clone --depth 1 https://gitlab.com/nonguix/nonguix /tmp/nonguix
-
-      - name: List packages and run guix refresh
+      # scripts/check-updates.scm reads the package definitions as text and
+      # follows GitHub's /releases/latest redirect, so no Guix is needed here.
+      # Going through `guix refresh` meant a `guix pull` on every run, which
+      # took ~12 minutes and kept failing.
+      - name: Check for updates
         id: check
-        env:
-          # Without a token the GitHub updater hits the 60 req/h anonymous
-          # rate limit and silently reports packages as up to date.
-          GUIX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # list-packages.scm swallows resolve-interface failures, so nonguix
-          # must be on the load path here too or gh drops off the list unseen.
-          packages=$(guix repl -L /tmp/nonguix -- scripts/list-packages.scm | tr '\n' ' ')
+          # The script exits non-zero if any package could not be checked, so
+          # a partial result fails the job instead of passing as green.
+          report=$(guile --no-auto-compile scripts/check-updates.scm)
 
-          echo "checking: $packages"
-
-          output=$(LANG=C guix refresh -L . -L /tmp/nonguix $packages 2>&1 || true)
-          echo "$output"
-
-          # `guix refresh` only warns when a module fails to load and still
-          # exits 0, which would silently skip those packages and report a
-          # green run.  Treat it as a failure instead.
-          if echo "$output" | grep -q "failed to load"; then
-            echo "::error::some package modules failed to load, see log above"
-            exit 1
-          fi
-
-          outdated=$(echo "$output" | grep "would be upgraded" || true)
-
-          if [ -n "$outdated" ]; then
+          if [ -n "$report" ]; then
             echo "has_outdated=true" >> $GITHUB_OUTPUT
             {
               echo "report<<REPORT_EOF"
-              echo "$outdated"
+              echo "$report"
               echo "REPORT_EOF"
             } >> $GITHUB_OUTPUT
           else
@@ -98,10 +62,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPORT: ${{ steps.check.outputs.report }}
         run: |
-          echo "$REPORT" | while IFS= read -r line; do
-            pkg=$(echo "$line" | sed 's/.*: \([^ ]*\) would be upgraded from.*/\1/')
-            old=$(echo "$line" | sed 's/.*upgraded from \([^ ]*\) to.*/\1/')
-            new=$(echo "$line" | sed 's/.*upgraded from [^ ]* to \([^ ]*\)/\1/')
+          echo "$REPORT" | while IFS=$'\t' read -r pkg old new; do
+            [ -n "$pkg" ] || continue
 
             title="update ${pkg}: ${old} → ${new}"
 
@@ -128,7 +90,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPORT: ${{ steps.check.outputs.report }}
         run: |
-          outdated_pkgs=$(echo "$REPORT" | sed 's/.*: \([^ ]*\) would be upgraded from.*/\1/' | sort)
+          outdated_pkgs=$(echo "$REPORT" | cut -f1)
 
           gh issue list \
             --label "outdated-packages" \
