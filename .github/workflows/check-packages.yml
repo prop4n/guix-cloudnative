@@ -18,7 +18,7 @@ concurrency:
 jobs:
   check-versions:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -33,9 +33,19 @@ jobs:
           echo | sudo /tmp/guix-install.sh
           sudo systemctl start guix-daemon
 
-      # No `guix pull` here: `guix refresh` only queries upstream release feeds,
-      # so the binary install is enough.  Pulling meant recompiling Guix on
-      # every run, which is what kept this job red.
+      # kubeseal needs (gnu packages kubernetes), absent from the 1.5.0 binary.
+      # Only the guix channel is pulled, so this is served by substitutes
+      # instead of being rebuilt; nonguix is supplied via -L below because it
+      # has no substitutes and would have to be compiled during the pull.
+      - name: guix pull
+        run: |
+          guix pull
+          echo "$HOME/.config/guix/current/bin" >> $GITHUB_PATH
+
+      # gh uses (nonguix build-system binary); a shallow checkout on the load
+      # path is enough for `guix refresh`, which never builds anything.
+      - name: Fetch nonguix
+        run: git clone --depth 1 https://gitlab.com/nonguix/nonguix /tmp/nonguix
 
       - name: List packages and run guix refresh
         id: check
@@ -44,10 +54,22 @@ jobs:
           # rate limit and silently reports packages as up to date.
           GUIX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          packages=$(guix repl -- scripts/list-packages.scm | tr '\n' ' ')
+          # list-packages.scm swallows resolve-interface failures, so nonguix
+          # must be on the load path here too or gh drops off the list unseen.
+          packages=$(guix repl -L /tmp/nonguix -- scripts/list-packages.scm | tr '\n' ' ')
 
-          output=$(LANG=C guix refresh --load-path=. $packages 2>&1 || true)
+          echo "checking: $packages"
+
+          output=$(LANG=C guix refresh -L . -L /tmp/nonguix $packages 2>&1 || true)
           echo "$output"
+
+          # `guix refresh` only warns when a module fails to load and still
+          # exits 0, which would silently skip those packages and report a
+          # green run.  Treat it as a failure instead.
+          if echo "$output" | grep -q "failed to load"; then
+            echo "::error::some package modules failed to load, see log above"
+            exit 1
+          fi
 
           outdated=$(echo "$output" | grep "would be upgraded" || true)
 
