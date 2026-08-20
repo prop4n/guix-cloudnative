@@ -11,9 +11,14 @@ permissions:
   issues: write
   contents: read
 
+concurrency:
+  group: check-packages
+  cancel-in-progress: true
+
 jobs:
   check-versions:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -22,27 +27,22 @@ jobs:
         run: |
           curl -L https://guix.gnu.org/install.sh -o /tmp/guix-install.sh
           chmod +x /tmp/guix-install.sh
+          # install.sh hardcodes ftpmirror.gnu.org, whose redirector regularly
+          # 502s on the .sig file and aborts the install.  Use ftp.gnu.org.
+          sed -i 's|https://ftpmirror.gnu.org/gnu/guix/|https://ftp.gnu.org/gnu/guix/|' /tmp/guix-install.sh
           echo | sudo /tmp/guix-install.sh
           sudo systemctl start guix-daemon
-          echo "$HOME/.config/guix/current/bin" >> $GITHUB_PATH
 
-      - name: Get week (cache key)
-        id: date
-        run: echo "week=$(date +%Y-%V)" >> $GITHUB_OUTPUT
-
-      - name: Cache guix pull
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/guix
-          key: guix-pull-${{ runner.os }}-${{ steps.date.outputs.week }}
-
-      - name: guix pull
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: guix pull --channels=ci/channels.scm
+      # No `guix pull` here: `guix refresh` only queries upstream release feeds,
+      # so the binary install is enough.  Pulling meant recompiling Guix on
+      # every run, which is what kept this job red.
 
       - name: List packages and run guix refresh
         id: check
+        env:
+          # Without a token the GitHub updater hits the 60 req/h anonymous
+          # rate limit and silently reports packages as up to date.
+          GUIX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           packages=$(guix repl -- scripts/list-packages.scm | tr '\n' ' ')
 
